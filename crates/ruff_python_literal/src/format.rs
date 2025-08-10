@@ -572,6 +572,35 @@ pub struct FormatString {
 }
 
 impl FormatString {
+    fn parse_literal_escaped_sequence(text: &str) -> (String, &str) {
+        let mut result_string = String::new();
+        let mut chars = text.chars();
+
+        let Some(escaped_char) = chars.next() else {
+            return (result_string, chars.as_str());
+        };
+
+        result_string.push(escaped_char);
+        if escaped_char == 'N' {
+            if let Some(after_n_char) = chars.next() {
+                if after_n_char == '{' {
+                    let mut unicode_name = String::from(after_n_char);
+
+                    for next_char in chars.by_ref() {
+                        unicode_name.push(next_char);
+                        if next_char == '}' {
+                            break;
+                        }
+                    }
+
+                    result_string.push_str(&unicode_name);
+                }
+            }
+        }
+
+        (result_string, chars.as_str())
+    }
+
     fn parse_literal_single(text: &str) -> Result<(char, &str), FormatParseError> {
         let mut chars = text.chars();
         // This should never be called with an empty str
@@ -594,10 +623,19 @@ impl FormatString {
         let mut result_string = String::new();
         while !cur_text.is_empty() {
             match FormatString::parse_literal_single(cur_text) {
-                Ok((next_char, remaining)) => {
-                    result_string.push(next_char);
-                    cur_text = remaining;
-                }
+                Ok((next_char, remaining)) => match next_char {
+                    '\\' => {
+                        result_string.push(next_char);
+                        let (escaped_sequence, es_remaining) =
+                            FormatString::parse_literal_escaped_sequence(remaining);
+                        result_string.push_str(&escaped_sequence);
+                        cur_text = es_remaining;
+                    }
+                    _ => {
+                        result_string.push(next_char);
+                        cur_text = remaining;
+                    }
+                },
                 Err(err) => {
                     return if result_string.is_empty() {
                         Err(err)
@@ -897,6 +935,26 @@ mod tests {
         });
 
         assert_eq!(FormatString::from_str("{{{key}}}ddfe"), expected);
+    }
+
+    #[test]
+    fn test_format_parse_escape_unicode_sequence() {
+        let expected = Ok(FormatString {
+            format_parts: vec![
+                FormatPart::Literal("\\N{snowman} ".to_owned()),
+                FormatPart::Field {
+                    field_name: "snowman".to_owned(),
+                    conversion_spec: None,
+                    format_spec: String::new(),
+                },
+                FormatPart::Literal(" some".to_owned()),
+            ],
+        });
+
+        assert_eq!(
+            FormatString::from_str("\\N{snowman} {snowman} some"),
+            expected
+        );
     }
 
     #[test]
